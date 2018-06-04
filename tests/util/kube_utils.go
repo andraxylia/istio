@@ -277,7 +277,7 @@ func GetIngress(serviceName, podLabel, namespace, kubeconfig string, serviceType
 	for {
 		select {
 		case <-ctx.Done():
-			return "", fmt.Errorf("%s readiness check timed out", serviceName)
+			return "", fmt.Errorf("%s sanity check timed out", serviceName)
 		default:
 			response, err := ctxhttp.Get(ctx, client, ingressURL)
 			if err == nil {

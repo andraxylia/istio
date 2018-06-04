@@ -41,11 +41,20 @@ import (
 )
 
 const (
-	servicesYaml         = "tests/e2e/tests/simple/testdata/servicesToBeInjected.yaml"
-	nonInjectedYaml      = "tests/e2e/tests/simple/testdata/servicesNotInjected.yaml"
-	routingR1Yaml        = "tests/e2e/tests/simple/testdata/routingrule1.yaml"
-	routingR2Yaml        = "tests/e2e/tests/simple/testdata/routingrule2.yaml"
-	routingRNPYaml       = "tests/e2e/tests/simple/testdata/routingruleNoPods.yaml"
+	servicesYaml    = "tests/e2e/tests/simple/testdata/servicesToBeInjected.yaml"
+	nonInjectedYaml = "tests/e2e/tests/simple/testdata/servicesNotInjected.yaml"
+	routingR1Yaml   = "tests/e2e/tests/simple/testdata/routingrule1.yaml"
+	routingR2Yaml   = "tests/e2e/tests/simple/testdata/routingrule2.yaml"
+	routingRNPYaml  = "tests/e2e/tests/simple/testdata/routingruleNoPods.yaml"
+
+	ingressYaml         = "tests/e2e/tests/simple/testdata/ingress.yaml"
+	ingressGatewayYaml  = "tests/e2e/tests/simple/testdata/ingressgateway.yaml"
+	destinationRuleYaml = "tests/e2e/tests/simple/testdata/destination-rule.yaml"
+
+	defaultRouteYaml   = "tests/e2e/tests/simple/testdata/default-route.yaml"
+	weightedRoute1Yaml = "tests/e2e/tests/simple/testdata/weighted-route1.yaml"
+	weightedRoute2Yaml = "tests/e2e/tests/simple/testdata/weighted-route2.yaml"
+
 	timeToWaitForPods    = 20 * time.Second
 	timeToWaitForIngress = 100 * time.Second
 )
@@ -275,6 +284,71 @@ func Test503sDuringChanges(t *testing.T) {
 	}
 }
 
+func Test503sDuringChangesWithGateway(t *testing.T) {
+
+	gateway := tc.Kube.IngressGatewayOrFail(t)
+	url := gateway + "/debug"
+
+	go func() {
+
+		time.Sleep(10 * time.Second)
+
+		defaultRoutePath := util.GetResourcePath(defaultRouteYaml)
+		if err := tc.Kube.Istioctl.CreateRule(defaultRoutePath); err != nil {
+			t.Errorf("istioctl rule create %s failed", defaultRouteYaml)
+			return
+		}
+
+		time.Sleep(15 * time.Second)
+
+		log.Infof("Changing rules mid run to v1/v2")
+		weightedRoute1Path := util.GetResourcePath(weightedRoute1Yaml)
+		if err := tc.Kube.Istioctl.CreateRule(weightedRoute1Path); err != nil {
+			t.Errorf("istioctl rule create %s failed", weightedRoute1Yaml)
+			return
+		}
+
+		time.Sleep(15 * time.Second)
+
+		log.Infof("Changing rules weight mid run to v1/v2")
+		weightedRoute2Path := util.GetResourcePath(weightedRoute2Yaml)
+		if err := tc.Kube.Istioctl.CreateRule(weightedRoute1Path); err != nil {
+			t.Errorf("istioctl rule create %s failed", weightedRoute2Yaml)
+			return
+		}
+
+		time.Sleep(15 * time.Second)
+
+		util.KubeDelete(tc.Kube.Namespace, weightedRoute2Path, tc.Kube.KubeConfig) // nolint:errcheck
+
+		time.Sleep(15 * time.Second)
+		util.KubeDelete(tc.Kube.Namespace, weightedRoute1Path, tc.Kube.KubeConfig) // nolint:errcheck
+
+		time.Sleep(15 * time.Second)
+		util.KubeDelete(tc.Kube.Namespace, defaultRoutePath, tc.Kube.KubeConfig) // nolint:errcheck
+	}()
+
+	// run at a low/moderate QPS for a while while changing the routing rules,
+	// check for any non 200s
+	opts := fhttp.HTTPRunnerOptions{
+		RunnerOptions: periodic.RunnerOptions{
+			QPS:        1,
+			Duration:   120 * time.Second,
+			NumThreads: 1,
+		},
+	}
+	opts.URL = url
+	res, err := fhttp.RunHTTPTest(&opts)
+	if err != nil {
+		t.Fatalf("Generating traffic via fortio failed: %v", err)
+	}
+	numRequests := res.DurationHistogram.Count
+	num200s := res.RetCodes[http.StatusOK]
+	if num200s != numRequests {
+		t.Errorf("Not all %d requests were successful (%v)", numRequests, res.RetCodes)
+	}
+}
+
 // This one may need to be fixed through some retries or health check
 // config/setup/policy in envoy (through pilot)
 func Test503sWithBadClusters(t *testing.T) {
@@ -363,9 +437,26 @@ func setTestConfig() error {
 				FortioImage: image,
 			},
 		},
+		{
+			KubeInject:      false,
+			AppYamlTemplate: util.GetResourcePath(ingressYaml),
+		},
+		{
+			KubeInject:      false,
+			AppYamlTemplate: util.GetResourcePath(ingressGatewayYaml),
+		},
+		{
+			KubeInject:      false,
+			AppYamlTemplate: util.GetResourcePath(defaultRouteYaml),
+		},
+		{
+			KubeInject:      false,
+			AppYamlTemplate: util.GetResourcePath(destinationRuleYaml),
+		},
 	}
 	for i := range services {
 		tc.Kube.AppManager.AddApp(&services[i])
 	}
+
 	return nil
 }
